@@ -2,6 +2,7 @@ const { exec } = require("child_process");
 const { Client, Intents, MessageEmbed } = require("discord.js");
 const axios = require("axios");
 require("dotenv").config();
+const keepAlive = require("./keep_alive");
 
 const client = new Client({
   intents: [
