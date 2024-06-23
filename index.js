@@ -1,7 +1,4 @@
 const { exec } = require("child_process");
-const fs = require("fs");
-const keepAlive = require("./keep_alive");
-
 const { Client, Intents, MessageEmbed } = require("discord.js");
 const axios = require("axios");
 require("dotenv").config();
@@ -15,6 +12,7 @@ const client = new Client({
 });
 
 const commandChannelId = "1252277316948725792";
+const cooldowns = new Map();
 
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -24,7 +22,15 @@ client.once("ready", async () => {
     await guild.commands.set([
       {
         name: "chk",
-        description: "تحقق من الروابط في ملف نصي",
+        description: "تحقق من رابط معين",
+        options: [
+          {
+            name: "url",
+            type: "STRING",
+            description: "الرابط",
+            required: true,
+          },
+        ],
       },
     ]);
   }
@@ -36,75 +42,45 @@ client.on("interactionCreate", async (interaction) => {
   const { commandName, user, channel } = interaction;
 
   if (commandName === "chk" && channel.id === commandChannelId) {
-    await interaction.reply("من فضلك أرسل الملف النصي المطلوب.");
+    const url = interaction.options.getString("url");
 
-    const fileFilter = (response) =>
-      response.author.id === user.id &&
-      response.channel.id === channel.id &&
-      response.attachments.size > 0;
+    const cooldownAmount = 30 * 1000;
+    const now = Date.now();
+    const timestamps = cooldowns.get(user.id);
+
+    if (timestamps) {
+      const expirationTime = timestamps + cooldownAmount;
+
+      if (now < expirationTime) {
+        const timeLeft = (expirationTime - now) / 1000;
+        return interaction.reply(
+          `الرجاء الانتظار ${timeLeft.toFixed(1)} ثانية قبل استخدام هذا الأمر مرة أخرى.`
+        );
+      }
+    }
+
+    cooldowns.set(user.id, now);
+    setTimeout(() => cooldowns.delete(user.id), cooldownAmount);
+
+    await interaction.deferReply();
+
+    const checkUrl = async (url) => {
+      try {
+        const response = await axios.get(url, { timeout: 10000 });
+        return response.status === 404
+          ? `الرابط هذا لا يعمل: ${url}`
+          : `الرابط هذا يعمل: ${url}`;
+      } catch (error) {
+        return `حدث خطأ أثناء محاولة الوصول إلى الرابط ${url}: ${error.message}`;
+      }
+    };
 
     try {
-      const fileCollected = await channel.awaitMessages({
-        filter: fileFilter,
-        max: 1,
-        time: 60000,
-        errors: ["time"],
-      });
-      const attachment = fileCollected.first().attachments.first();
-
-      if (attachment.name.endsWith(".txt")) {
-        const filePath = `./${attachment.name}`;
-        const response = await axios.get(attachment.url, {
-          responseType: "stream",
-        });
-        response.data.pipe(fs.createWriteStream(filePath));
-        response.data.on("end", async () => {
-          await interaction.followUp(
-            "تم استلام الملف بنجاح جاري فحص الروابط الرجاء الانتظار (قد يستغرق الأمر وقتا)"
-          );
-
-          const checkUrl = async (url) => {
-            try {
-              const response = await axios.get(url, { timeout: 10000 });
-              return response.status === 404
-                ? `الرابط هذا لا يعمل: ${url}`
-                : `الرابط هذا يعمل: ${url}`;
-            } catch (error) {
-              return `حدث خطأ أثناء محاولة الوصول إلى الرابط ${url}: ${error.message}`;
-            }
-          };
-
-          const checkUrlsFromFile = async (filePath) => {
-            const results = [];
-            try {
-              const data = fs.readFileSync(filePath, "utf-8");
-              const urls = data.split("\n");
-              for (const url of urls) {
-                if (url.trim()) {
-                  results.push(await checkUrl(url.trim()));
-                }
-              }
-            } catch (error) {
-              results.push(`حدث خطأ أثناء قراءة الملف: ${error.message}`);
-            }
-            return results;
-          };
-
-          const results = await checkUrlsFromFile(filePath);
-          fs.unlinkSync(filePath);
-
-          try {
-            await user.send(results.join("\n"));
-          } catch (error) {
-            await interaction.followUp("الرجاء فتح الخاص لاستلام النتائج.");
-          }
-        });
-      } else {
-        await interaction.followUp("الملف المرسل ليس ملف نصي.");
-      }
+      const result = await checkUrl(url);
+      await interaction.editReply(result);
     } catch (error) {
       console.error(error);
-      await interaction.followUp(`حدث خطأ غير متوقع: ${error.message}`);
+      await interaction.editReply(`حدث خطأ غير متوقع: ${error.message}`);
     }
   }
 });
